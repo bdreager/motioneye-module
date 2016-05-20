@@ -201,8 +201,6 @@ if __name__ == '__main__':
     args = init_args()
     config = Config()
 
-    print('finished configs')
-
     logging.basicConfig(filename=config.log_file, filemode='w', format='%(levelname)s: %(message)s',level=logging.DEBUG)
     if args.debug: log.addHandler(logging.StreamHandler()) # print logs to console when debugging
 
