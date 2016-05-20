@@ -8,7 +8,7 @@ import dropbox, os, json, re, subprocess, time, logging, shutil, uuid
 from argparse import ArgumentParser
 from datetime import datetime, date, timedelta
 from tendo import singleton
-singleton.SingleInstance() # this script will likely be a chron job, se we only want one to run at a time
+singleton.SingleInstance() # this script will likely be a cron job, se we only want one to run at a time
 
 log = logging.getLogger(__name__)
 
