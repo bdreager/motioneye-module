@@ -25,11 +25,27 @@ def update_remote(client, remote, local):
     for file in remote:
         if not basename(file) in local_basenames:
             log.info('Deleting [{}]'.format(basename(file)))
-            client.file_delete(file)
+            delete_remote(file)
         else:
             log.info('Preserving [{}]'.format(basename(file)))
 
-def delete_old_local(files, cutoff_date):
+def delete_remote(client, file):
+    try:
+        metadata = client.metadata(file, list=True)
+        if len(metadata['contents']) >= 10000:
+            log.info('\ttoo many files [{}], deleting individually'.format(len(metadata['contents'])))
+            for i, item in enumerate(metadata['contents']):
+                log.debug('\t\tdeleting [{}][{}]'.format(item['path'], i))
+                client.file_delete(item['path'])
+                if len(metadata['contents']) - i < 10000:
+                    log.info('\t[{}] files deleted'.format(i))
+                    break
+
+        client.file_delete(file)
+    except:
+        pass
+
+def delete_local(files, cutoff_date):
     pattern = re.compile(FileDater.kNAME_DATE_PATTERN)
 
     for file in files:
@@ -39,7 +55,7 @@ def delete_old_local(files, cutoff_date):
             log.info('{} older than {}, deleting {}'.format(file_date, cutoff_date, basename(file)))
             os.remove(file)
 
-def upload_timelapses(client, local_files, remote_files, remote_dest):
+def upload_files(client, local_files, remote_files, remote_dest):
     for i, file_path in enumerate(local_files, 1):
         file_basename = basename(file_path)
         log.info('Uploading [{}/{}] {}'.format(i,len(local_files), file_basename))
@@ -68,6 +84,7 @@ def chunk_list(list, chunk_size):
     return [list[i:i + chunk_size] for i in range(0, len(list), chunk_size)]
 
 class Config(object):
+    #TODO if you get a 500 error using dropbox, just restart and try again
     sysvinit_conf = '/etc/init.d/motioneye'
     upload_conf = 'uploadservices.json'
     device_conf = 'thread-1.conf'
@@ -201,7 +218,7 @@ if __name__ == '__main__':
     args = init_args()
     config = Config()
 
-    logging.basicConfig(filename=config.log_file, filemode='w', format='%(levelname)s: %(message)s',level=logging.DEBUG)
+    logging.basicConfig(filename=config.log_file, filemode='w', format='%(levelname)s: %(message)s',level=logging.DEBUG if args.debug else logging.INFO)
     if args.debug: log.addHandler(logging.StreamHandler()) # print logs to console when debugging
 
     #TODO upgrade to Dropbox API v2
@@ -225,7 +242,7 @@ if __name__ == '__main__':
     remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
     remote_timelapse_files = [basename(content['path']) for content in remote_metadata['contents']]
     log.info('\n==========> Uploading timelapses')
-    upload_timelapses(client, local_timelapse_files, remote_timelapse_files, config.remote_timelapses_path)
+    upload_files(client, local_timelapse_files, remote_timelapse_files, config.remote_timelapses_path)
 
     #NOTE rebuild remote_timelapse_files after uploading, since it might have changed
     remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
@@ -233,7 +250,7 @@ if __name__ == '__main__':
 
     cutoff = FileDater.dateago(config.preserve_timelapses)
     log.info('\n==========> Deleting old timelapses locally')
-    delete_old_local(local_timelapse_files, cutoff)
+    delete_local(local_timelapse_files, cutoff)
 
     #NOTE rebuild local_timelapse_files after deleting, since it might have changed
     local_timelapse_files = [os.path.join(config.local_timelapses_path, path) for path in os.listdir(config.local_timelapses_path)]
