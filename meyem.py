@@ -20,31 +20,6 @@ def init_args():
 def basename(path):
     return os.path.basename(os.path.normpath(path))
 
-def update_remote(client, remote, local):
-    local_basenames = [basename(path) for path in local]
-    for file in remote:
-        if not basename(file) in local_basenames:
-            log.info('Deleting [{}]'.format(basename(file)))
-            delete_remote(file)
-        else:
-            log.info('Preserving [{}]'.format(basename(file)))
-
-def delete_remote(client, file):
-    try:
-        metadata = client.metadata(file, list=True)
-        if len(metadata['contents']) >= 10000:
-            log.info('\ttoo many files [{}], deleting individually'.format(len(metadata['contents'])))
-            for i, item in enumerate(metadata['contents']):
-                log.debug('\t\tdeleting [{}][{}]'.format(item['path'], i))
-                client.file_delete(item['path'])
-                if len(metadata['contents']) - i < 10000:
-                    log.info('\t[{}] files deleted'.format(i))
-                    break
-
-        client.file_delete(file)
-    except:
-        pass
-
 def delete_local(files, cutoff_date):
     pattern = re.compile(FileDater.kNAME_DATE_PATTERN)
 
@@ -55,33 +30,64 @@ def delete_local(files, cutoff_date):
             log.info('{} older than {}, deleting {}'.format(file_date, cutoff_date, basename(file)))
             os.remove(file)
 
-def upload_files(client, local_files, remote_files, remote_dest):
-    for i, file_path in enumerate(local_files, 1):
-        file_basename = basename(file_path)
-        log.info('Uploading [{}/{}] {}'.format(i,len(local_files), file_basename))
-        if file_basename in remote_files:
-            log.info('\tremote file exists, skipping')
-        else:
-            with open(file_path, 'rb') as file:
-                full_dest = os.path.join(remote_dest,file_basename)
-                response = client.put_file(full_dest, file)
-                log.info('\tdone')
-
-# this one did not work for some reason, likely a strange network issue
-def upload_file(client, file_path, chunk_size, dest):
-    with open(file_path, 'rb') as file:
-        size = os.path.getsize(file_path)
-        uploader = client.get_chunked_uploader(file, size)
-        while uploader.offset < size:
-            upload = uploader.upload_chunked(chunk_size=chunk_size)
-        uploader.finish(dest)
-
 def safemakedirs(path):
     try:    os.makedirs(path)
     except: pass
 
 def chunk_list(list, chunk_size):
     return [list[i:i + chunk_size] for i in range(0, len(list), chunk_size)]
+
+class DropboxClientWrapper(dropbox.client.DropboxClient):
+
+    #TODO upgrade to Dropbox API v2
+    def __init__(self, access_token):
+        super(DropboxClientWrapper, self).__init__(access_token)
+
+    def update_remote(self, remote, local):
+        local_basenames = [basename(path) for path in local]
+        for file in remote:
+            if not basename(file) in local_basenames:
+                log.info('Deleting [{}]'.format(basename(file)))
+                self.delete_remote(file)
+            else:
+                log.info('Preserving [{}]'.format(basename(file)))
+
+    def delete_remote(self, file):
+        try:
+            metadata = self.metadata(file, list=True)
+            if len(metadata['contents']) >= 10000:
+                log.info('\ttoo many files [{}], deleting individually'.format(len(metadata['contents'])))
+                for i, item in enumerate(metadata['contents']):
+                    log.debug('\t\tdeleting [{}][{}]'.format(item['path'], i))
+                    self.file_delete(item['path'])
+                    if len(metadata['contents']) - i < 10000:
+                        log.info('\t[{}] files deleted'.format(i))
+                        break
+
+            self.file_delete(file)
+        except:
+            pass
+
+    def upload_files(self, local_files, remote_files, remote_dest):
+        for i, file_path in enumerate(local_files, 1):
+            file_basename = basename(file_path)
+            log.info('Uploading [{}/{}] {}'.format(i,len(local_files), file_basename))
+            if file_basename in remote_files:
+                log.info('\tremote file exists, skipping')
+            else:
+                with open(file_path, 'rb') as file:
+                    full_dest = os.path.join(remote_dest,file_basename)
+                    response = self.put_file(full_dest, file)
+                    log.info('\tdone')
+
+    # this one did not work for some reason, likely a strange network issue
+    def upload_file(self, file_path, chunk_size, dest):
+        with open(file_path, 'rb') as file:
+            size = os.path.getsize(file_path)
+            uploader = self.get_chunked_uploader(file, size)
+            while uploader.offset < size:
+                upload = uploader.upload_chunked(chunk_size=chunk_size)
+            uploader.finish(dest)
 
 class Config(object):
     #TODO if you get a 500 error using dropbox, just restart and try again
@@ -221,15 +227,14 @@ if __name__ == '__main__':
     logging.basicConfig(filename=config.log_file, filemode='w', format='%(levelname)s: %(message)s',level=logging.DEBUG if args.debug else logging.INFO)
     if args.debug: log.addHandler(logging.StreamHandler()) # print logs to console when debugging
 
-    #TODO upgrade to Dropbox API v2
-    client = dropbox.client.DropboxClient(config.db_auth_token)
+    client = DropboxClientWrapper(config.db_auth_token)
     remote_metadata = client.metadata(config.remote_backups_path, list=True)
 
     local_backups = [os.path.join(config.local_backups_path, path) for path in os.listdir(config.local_backups_path) if path not in config.timelapses_basename]
     local_backups.sort()
     remote_backups = [content['path'] for content in remote_metadata['contents'] if config.remote_timelapses_path not in content['path']]
     log.info('\n==========> Updating remote backups')
-    update_remote(client, remote_backups, local_backups)
+    client.update_remote(remote_backups, local_backups)
 
     timelapser = Timelapser(config.local_timelapses_path)
     log.info('\n==========> Generating timelaspses')
@@ -242,7 +247,7 @@ if __name__ == '__main__':
     remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
     remote_timelapse_files = [basename(content['path']) for content in remote_metadata['contents']]
     log.info('\n==========> Uploading timelapses')
-    upload_files(client, local_timelapse_files, remote_timelapse_files, config.remote_timelapses_path)
+    client.upload_files(local_timelapse_files, remote_timelapse_files, config.remote_timelapses_path)
 
     #NOTE rebuild remote_timelapse_files after uploading, since it might have changed
     remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
@@ -256,4 +261,4 @@ if __name__ == '__main__':
     local_timelapse_files = [os.path.join(config.local_timelapses_path, path) for path in os.listdir(config.local_timelapses_path)]
     local_timelapse_files.sort()
     log.info('\n==========> Updating remote timelapses')
-    update_remote(client, remote_timelapse_files, local_timelapse_files)
+    client.update_remote(remote_timelapse_files, local_timelapse_files)
