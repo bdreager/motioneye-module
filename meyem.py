@@ -55,7 +55,7 @@ class DropboxClientWrapper(dropbox.client.DropboxClient):
     def delete_remote(self, file):
         try:
             metadata = self.metadata(file, list=True)
-            if len(metadata['contents']) >= 10000:
+            if metadata['is_dir'] and len(metadata['contents']) >= 10000:
                 log.info('\ttoo many files [{}], deleting individually'.format(len(metadata['contents'])))
                 for i, item in enumerate(metadata['contents']):
                     log.debug('\t\tdeleting [{}][{}]'.format(item['path'], i))
@@ -65,14 +65,18 @@ class DropboxClientWrapper(dropbox.client.DropboxClient):
                         break
 
             self.file_delete(file)
-        except:
+        except Exception, e:
+            log.error(e)
             pass
 
-    def upload_files(self, local_files, remote_files, remote_dest):
+    def upload_files(self, local_files, remote_dest, overwrite=False):
+        metadata = self.metadata(remote_dest, list=True)
+        remote_files = [basename(content['path']) for content in metadata['contents']]
+
         for i, file_path in enumerate(local_files, 1):
             file_basename = basename(file_path)
             log.info('Uploading [{}/{}] {}'.format(i,len(local_files), file_basename))
-            if file_basename in remote_files:
+            if not overwrite and file_basename in remote_files:
                 log.info('\tremote file exists, skipping')
             else:
                 with open(file_path, 'rb') as file:
@@ -237,21 +241,13 @@ if __name__ == '__main__':
     client.update_remote(remote_backups, local_backups)
 
     timelapser = Timelapser(config.local_timelapses_path)
-    log.info('\n==========> Generating timelaspses')
+    log.info('\n==========> Generating timelapses')
     timelapser.generate_timelapses(local_backups)
 
-    local_timelapse_files = [os.path.join(config.local_timelapses_path, path) for path in os.listdir(config.local_timelapses_path)]
+    local_timelapse_files = [os.path.join(config.local_timelapses_path, file) for file in os.listdir(config.local_timelapses_path)]
     local_timelapse_files.sort()
-
-    #TODO change remote_timelapse_files to use full paths, and make sure it all still works
-    remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
-    remote_timelapse_files = [basename(content['path']) for content in remote_metadata['contents']]
     log.info('\n==========> Uploading timelapses')
-    client.upload_files(local_timelapse_files, remote_timelapse_files, config.remote_timelapses_path)
-
-    #NOTE rebuild remote_timelapse_files after uploading, since it might have changed
-    remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
-    remote_timelapse_files = [os.path.join(config.remote_timelapses_path, basename(content['path'])) for content in remote_metadata['contents']]
+    client.upload_files(local_timelapse_files, config.remote_timelapses_path)
 
     cutoff = FileDater.dateago(config.preserve_timelapses)
     log.info('\n==========> Deleting old timelapses locally')
@@ -260,5 +256,7 @@ if __name__ == '__main__':
     #NOTE rebuild local_timelapse_files after deleting, since it might have changed
     local_timelapse_files = [os.path.join(config.local_timelapses_path, path) for path in os.listdir(config.local_timelapses_path)]
     local_timelapse_files.sort()
+    remote_metadata = client.metadata(config.remote_timelapses_path, list=True)
+    remote_timelapse_files = [content['path'] for content in remote_metadata['contents']]
     log.info('\n==========> Updating remote timelapses')
     client.update_remote(remote_timelapse_files, local_timelapse_files)
